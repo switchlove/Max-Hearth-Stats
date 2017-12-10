@@ -6,7 +6,8 @@
 	
 	"mixintos" : {
 		"stonehearth/services/server/population/data/ascendancy_population.json" : "max_hearth_stats/data/ascendancy_population.json",
-		"stonehearth/services/server/population/data/rayyas_children_population.json" : "max_hearth_stats/data/rayyas_children_population.json"
+		"stonehearth/services/server/population/data/rayyas_children_population.json" : "max_hearth_stats/data/rayyas_children_population.json",
+		"rayyas_children/data/rayyas_children_population.json" : "max_hearth_stats/data/rayyas_children_population.json"
 	}
 
 }
