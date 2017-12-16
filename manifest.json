@@ -3,11 +3,13 @@
         "name": "Max Hearth Stats",
         "version": 3
     },
-	
+	"default_locale": "en",
 	"mixintos" : {
-		"stonehearth/services/server/population/data/ascendancy_population.json" : "max_hearth_stats/data/ascendancy_population.json",
-		"stonehearth/services/server/population/data/rayyas_children_population.json" : "max_hearth_stats/data/rayyas_children_population.json",
-		"rayyas_children/data/rayyas_children_population.json" : "max_hearth_stats/data/rayyas_children_population.json"
+		"stonehearth/services/server/population/data/ascendancy_population.json" : "max_hearth_stats/services/ascendancy_population.json",
+		"stonehearth/services/server/population/data/rayyas_children_population.json" : "max_hearth_stats/services/rayyas_children_population.json",
+		"rayyas_children/data/rayyas_children_population.json" : "max_hearth_stats/services/rayyas_children_population.json"
+	},
+	"overrides": {
+		"stonehearth/services/server/population/population_faction.lua" : "max_hearth_stats/services/population_faction.lua"
 	}
-
 }
