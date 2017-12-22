@@ -38,10 +38,12 @@ function PopulationFaction:initialize()
    -- assigned trait (thus ensuring that we never end up with two 'herbivore-only'
    -- hearthlings, and the like.)
    self._prime_traits = {}
+   self._roster_initialized = false
 
    self._sv.kingdom = nil
    self._sv.player_id = nil
    self._sv.citizens = nil
+   self._sv._generated_citizens = nil
    self._sv.parties = {}
    self._sv.party_member_counts = nil
    self._sv.bulletins = {}
@@ -52,16 +54,65 @@ function PopulationFaction:initialize()
    self._sv.city_tier = 1
    self._sv.player_acknowledges_tier_2 = false
    self._sv.player_acknowledges_tier_3 = false
-
+   self._sv.camp_placed = false
    self._sv.suspended_work_orders = {}
 
    self._sv._max_citizens_ever = 0
+   self._sv._game_options = {}
+end
+
+function PopulationFaction:reset_generated_citizens()
+   if self._sv._generated_citizens then
+      -- destroy existing roster (can exist if we went to the select roster screen and then restarted the game flow by pressing f5)
+      for _, citizen_entry in pairs(self._sv._generated_citizens) do
+         for _, citizen in pairs(citizen_entry) do
+               radiant.entities.destroy_entity(citizen)
+         end
+      end
+   end
+
+   self._sv._generated_citizens = {}
+end
+
+function PopulationFaction:set_generated_citizen(i, citizen_entry)
+   self._sv._generated_citizens[i] = citizen_entry
+end
+
+function PopulationFaction:get_generated_citizen(i)
+   return self._sv._generated_citizens[i]
+end
+
+function PopulationFaction:get_generated_citizens()
+   return self._sv._generated_citizens
+end
+
+function PopulationFaction:unset_generated_citizens()
+   self._sv._generated_citizens = nil
+end
+
+function PopulationFaction:get_roster_initialized()
+   return self._roster_initialized
+end
+
+function PopulationFaction:set_roster_initialized(value)
+   self._roster_initialized = value
+end
+
+function PopulationFaction:place_camp()
+   local result = self._sv.camp_placed
+   self._sv.camp_placed = true
+   return result
+end
+
+function PopulationFaction:is_camp_placed()
+   return self._sv.camp_placed
 end
 
 function PopulationFaction:create(player_id, kingdom, is_npc)
    self._sv.kingdom = kingdom
    self._sv.player_id = player_id
    self._sv.citizens = _radiant.sim.alloc_number_map()
+   self._sv._generated_citizens = {}
    self._sv.threat_data = radiant.create_datastore({threat_level = 0, in_combat = false})
    self._sv.is_npc = is_npc
    if not self._sv.is_npc then
@@ -129,18 +180,21 @@ function PopulationFaction:post_activate()
    local town = stonehearth.town:get_town(self._sv.player_id)
    for work_order, is_suspended in pairs(self._sv.suspended_work_orders) do
       if is_suspended then
-         town:enable_task_groups_for_work_order(work_order, false)
+         radiant.events.trigger_async(stonehearth, 'stonehearth:population:faction_work_order_changed', {work_order_name = work_order, is_suspended = is_suspended, player_id = self._sv.player_id})
       end
    end
 
    if self._remove_unit_infos then
       for id, citizen in self._sv.citizens:each() do
-         local unit_info = citizen:get_component('unit_info')
+         local unit_info = citizen:get_component('unit_info') --cpp unit info
+         local unit_info_component = citizen:get_component('stonehearth:unit_info')
          if unit_info then
             radiant.entities.set_display_name(citizen, unit_info:get_display_name())
             local custom_name = unit_info:get_custom_name()
             radiant.entities.set_custom_name(citizen, custom_name)
-            radiant.entities.set_description(citizen, unit_info:get_description())
+            if not unit_info_component or unit_info_component:get_description() == nil then -- this is for compatibility with the remove_level_0 update in the job_component
+               radiant.entities.set_description(citizen, unit_info:get_description())
+            end
             citizen:set_debug_text(custom_name)
             citizen:remove_component('unit_info')
          end
@@ -257,6 +311,8 @@ function PopulationFaction:regenerate_stats(citizen, options)
       tc:clear_all_traits()
       self:_assign_citizen_traits(citizen, options)
    end
+   
+   self:_assign_citizen_item_preferences(citizen, options)
 end
 
 --Set the city tier
@@ -332,6 +388,24 @@ function PopulationFaction:get_pet_names()
    return self._data.pet_names
 end
 
+function PopulationFaction:get_town_task_group_uris()
+   local task_groups_list_uri
+   if self._data and self._sv.kingdom then
+      task_groups_list_uri = self._data.task_groups
+   else
+      -- TODO:X: This is super hacky to catch 2 edge cases:
+      --         - the town is created before the player is assigned a kingdom
+      --         - the town is initialized before the faction is (when loading a savegame)
+      task_groups_list_uri = 'stonehearth:data:player_task_groups'
+   end
+   
+   if task_groups_list_uri then
+      return radiant.resources.load_json(task_groups_list_uri).task_groups
+   else
+      return {}
+   end
+end
+
 function PopulationFaction:get_job_index()
    local job_index = 'stonehearth:jobs:index'
    if self:is_npc() then
@@ -371,13 +445,17 @@ function PopulationFaction:is_npc()
 end
 
 function PopulationFaction:generate_town_name()
+   return self.generate_town_name_from_pieces(self._data.town_pieces)
+end
+
+function PopulationFaction.generate_town_name_from_pieces(town_pieces)
    local composite_name = 'Defaultville'
 
    --If we do not yet have the town data, then return a default town name
-   if self._data.town_pieces then
-      local prefixes = self._data.town_pieces.optional_prefix
-      local base_names = self._data.town_pieces.town_name
-      local suffix = self._data.town_pieces.suffix
+   if town_pieces then
+      local prefixes = town_pieces.optional_prefix
+      local base_names = town_pieces.town_name
+      local suffix = town_pieces.suffix
 
       --make a composite
       local target_prefix = prefixes[rng:get_int(1, #prefixes)]
@@ -552,6 +630,29 @@ function PopulationFaction:generate_roster(count, options)
    return roster
 end
 
+function PopulationFaction:get_game_options()
+   return self._sv._game_options
+end
+
+function PopulationFaction:set_game_options(options)
+   if options.game_mode then
+      -- TODO: only hosting player should have a game mode in their options
+      stonehearth.game_creation:set_game_mode(options.game_mode)
+   end
+
+   self._sv._game_options = options
+
+   if not self._sv._game_options.starting_items then
+      self._sv._game_options.starting_items = {}
+      self._sv._game_options.starting_items["stonehearth:carpenter:talisman"] = 1
+      self._sv._game_options.starting_items["stonehearth:trapper:talisman"] = 1
+   end
+
+   if not self._sv._game_options.starting_gold then
+      self._sv._game_options.starting_gold = 2
+   end
+end
+
 --When the amenity changes for this population, citizens should
 --check the threat level of everyone already in their sight sensors
 function PopulationFaction:_on_amenity_changed(e)
@@ -581,7 +682,7 @@ function PopulationFaction:_monitor_citizen(citizen)
       self._on_entity_killed)
 
    -- Don't trace npc sight sensors. We only need that for combat music which only cares about non-npc players
-   if self._sv.player_id ~= 'player_1' then
+   if stonehearth.player:is_player_npc(self._sv.player_id) then
       return
    end
 
@@ -841,6 +942,8 @@ function PopulationFaction:_set_citizen_initial_state(citizen, gender, role, opt
    self:_allocate_attribute_points(citizen, role_data, { embarking = true })
    -- give them traits
    self:_assign_citizen_traits(citizen, options)
+   -- give them item preferences
+   self:_assign_citizen_item_preferences(citizen, options)
 end
 
 function PopulationFaction:set_citizen_name(citizen, gender, role_data)
@@ -860,6 +963,15 @@ function PopulationFaction:_set_personality(citizen)
 
    --For the teacher field, assign the one appropriate for this kingdom
    personality_component:add_substitution_by_parameter('teacher', self._sv.kingdom, 'stonehearth')
+end
+
+function PopulationFaction:_assign_citizen_item_preferences(citizen, options)
+   if not options.suppress_item_preferences then
+      local appeal = citizen:get_component('stonehearth:appeal')
+      if appeal then
+         appeal:generate_item_preferences()
+      end
+   end
 end
 
 function PopulationFaction:_assign_citizen_traits(citizen, options)
@@ -1029,10 +1141,6 @@ function PopulationFaction:change_work_order_command(session, response, work_ord
       elseif checked == false then
          citizen:add_component('stonehearth:work_order'):disable_work_order(work_order)
       end
-      local town = stonehearth.town:get_town(self._sv.player_id)
-      if town then
-         town:update_task_groups_for_work_order(work_order, citizen, checked)
-      end
    end
 
    return true
@@ -1043,14 +1151,7 @@ function PopulationFaction:set_work_order_suspend_command(session, response, wor
    local suspended = self._sv.suspended_work_orders[work_order]
    if suspended ~= is_suspended then
       self._sv.suspended_work_orders[work_order] = is_suspended
-
-      local town = stonehearth.town:get_town(self._sv.player_id)
-      if town then
-         local enabled = not is_suspended
-         town:enable_task_groups_for_work_order(work_order, enabled)
-      end
-
-      radiant.events.trigger_async(stonehearth, 'stonehearth:population:work_order_suspended', {work_order_name = work_order, is_suspended = is_suspended, player_id = self._sv.player_id})
+      radiant.events.trigger_async(stonehearth, 'stonehearth:population:faction_work_order_changed', {work_order_name = work_order, is_suspended = is_suspended, player_id = self._sv.player_id})
       self.__saved_variables:mark_changed()
    end
 
@@ -1129,8 +1230,10 @@ function PopulationFaction:_create_combat_listener()
       -- Listen on combat engagement, npc players do not need a listener
       self._combat_listener = radiant.events.listen(self,
          'stonehearth:population:engaged_in_combat',
-         self,
-         self._on_combat_started)
+         function(e)
+            radiant.events.trigger_async(self, 'stonehearth:population:engaged_in_combat', e)
+            self:_on_combat_started(e)
+         end)
    end
 end
 
